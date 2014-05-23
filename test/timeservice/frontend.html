@@ -6,7 +6,15 @@
       <script>
          AUTOBAHN_DEBUG = true;
       </script>
-      <script src="../../build/autobahn.js"></script>
+      <!--[if lt IE 9]>
+      <script src="/static/package/lib/json2.js"></script>
+      <script src="/static/package/lib/ie8.js"></script>
+      <script src="/static/package/lib/ta.js"></script>
+      <![endif]-->
+      <script src="/static/build/autobahn.js"></script>
+
+
+
       <script src="frontend.js"></script>
    </body>
 </html>

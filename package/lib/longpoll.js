@@ -42,12 +42,16 @@ var _RawLongPoll = function (url, protocols) {
    };
 
 
-   var options = {'protocols': ['wamp.2.msgpack', 'wamp.2.json']};
-
-   self.request('http://127.0.0.1:8080/wamp/open', options).then(
+   var options = {'protocols': protocols || ["wamp.2.json"]};
+   if(typeof(msgpack)==="undefined") {
+       options.protocols = ["wamp.2.json"];
+   }
+   self.request(self._url + '/open', JSON.stringify(options)).then(
       function (res) {
          console.log("ok", res);
          console.log(res.transport);
+         self.protocol = res.protocol;
+         self._send_buffer = [];
 
          var txseq = 0;
          var rxseq = 0;
@@ -59,14 +63,14 @@ var _RawLongPoll = function (url, protocols) {
             if (!socket._sender) {
                socket._sender = setInterval(function () {
 
-                  if (self._send_buffer.length) {
+                  if (socket._send_buffer.length) {
 
-                     var send_buffer = self._send_buffer.join('\x00');
-                     self._send_buffer = [];
+                     var send_buffer = socket._send_buffer.join('\x00');
+                     socket._send_buffer = [];
                      // send send_buffer .. 
 
                      txseq += 1;
-                     self.request('http://127.0.0.1:8080/wamp/' + res.transport + '/send#' + txseq, send_buffer).then(
+                     self.request(self._url + '/' + res.transport + '/send#' + txseq, send_buffer).then(
                         function (res) {
                            console.log("ok 2", res);
                         },
@@ -85,9 +89,13 @@ var _RawLongPoll = function (url, protocols) {
 
          function receive() {
             rxseq += 1;
-            self.request('http://127.0.0.1:8080/wamp/' + res.transport + '/receive+' + rxseq).then(
+            self.request(self._url + '/' + res.transport + '/receive#' + rxseq).then(
                function (res) {
                   console.log("receive ok", res);
+                   for(var i=0;i<res.length;i++) {
+                       socket.onmessage(res[i], true);
+                   }
+
                   if (!self._is_closing) {
                      receive();
                   }
@@ -102,6 +110,7 @@ var _RawLongPoll = function (url, protocols) {
          }
 
          receive();
+         socket.onopen();
       },
       function (code, msg) {
          console.log("failed", code, msg);
@@ -111,11 +120,59 @@ var _RawLongPoll = function (url, protocols) {
    return socket;
 };
 
+cors_preflight = function(url, d, data) {
+    var req = new XMLHttpRequest();
+    req.open("OPTIONS", url, true);
+          req.setRequestHeader("Content-type", "application/json; charset=utf-8");
+          req.onreadystatechange = function(evt2) {
+              if (req.readyState === 4) {
+
+                 if (req.status === 200) {
+
+                     req.open("POST", url, true);
+                    req.setRequestHeader("Content-type", "application/json; charset=utf-8");
+                     req.onreadystatechange = function(evt3) {
+                         if (req.readyState === 4) {
+
+                     if (req.status === 200) {
+                        var msg = JSON.parse(req.responseText);
+                        d.resolve(msg);
+
+                     } if (req.status === 204 || req.status === 1223) {
+                        d.resolve();
+
+                     } else {
+                        //d.reject(req.status, req.statusText);
+                     }
+
+      }
+                     }
+                     if (data !== undefined) {
+                          switch(self.protocol) {
+                              case "wamp.2.msgpack":
+                                  req.send(msgpack.pack(data));
+                                  break;
+                              case "wamp.2.json":
+                              default:
+                                  req.send(data);
+                                  break;
+                          }
+
+                       } else {
+                          req.send();
+                       }
+                 }
+
+              }
+          };
+          req.send();
+};
 
 _RawLongPoll.prototype.request = function (url, data) {
 
    var d = when.defer();
    var req = new XMLHttpRequest();
+
 
    req.onreadystatechange = function (evt) {
 
@@ -129,32 +186,48 @@ _RawLongPoll.prototype.request = function (url, data) {
       if (req.readyState === 4) {
 
          if (req.status === 200) {
-            var msg = JSON.parse(req.response);
+            var msg = JSON.parse(req.responseText);
             d.resolve(msg);
 
-         } if (req.status === 204) {
+         } else if (req.status === 204 || req.status === 1223) {
             d.resolve();
 
          } else {
-            //d.reject(req.status, req.statusText);
-         }
+
+             //cors_preflight(url,d, data);
+
 
       }
    }
-
-   req.open("POST", url, true);
+   };
+   try {
+      req.open("POST", url, true);
    req.setRequestHeader("Content-type", "application/json; charset=utf-8");
-/*   
+
+/*
    req.timeout = 500;
    req.ontimeout = function () {
       d.reject(500, "Request Timeout");
    }
 */
    if (data !== undefined) {
-      req.send(JSON.stringify(data));
+      switch(self.protocol) {
+          case "wamp.2.msgpack":
+              req.send(msgpack.pack(data));
+              break;
+          case "wamp.2.json":
+          default:
+              req.send(data);
+              break;
+      }
+
    } else {
       req.send();
    }
+   } catch(exc) {
+       //cors_preflight(url,d, data);
+   }
+
 
    if (d.promise.then) {
       // whenjs has the actual user promise in an attribute
@@ -168,13 +241,13 @@ _RawLongPoll.prototype.request = function (url, data) {
 var _LongPoll = function (url, options) {
    var self = this;
    self._url = url;
-   self._options = options;
+   self._protocols = options;
 };
 
 
 _LongPoll.prototype.create = function () {
    var self = this;
-   return new _RawLongPoll(self._url, ['wamp.2.json']);
+   return new _RawLongPoll(self._url, self._protocols || ["wamp.2.json"]);
 };
 
 exports.LongPoll = _LongPoll;

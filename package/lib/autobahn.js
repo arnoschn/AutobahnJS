@@ -22,6 +22,12 @@ if ('AUTOBAHN_DEBUG' in global && AUTOBAHN_DEBUG) {
    require('when/monitor/console');
    if ('console' in global) {
       console.log("AutobahnJS debug enabled");
+      if(!console.groupStart) {
+         // IE8 - at least in emulation mode IE8, does not have groupStart
+         console.groupStart = function(msg) {
+         };
+      }
+
    }
 }
 
@@ -29,12 +35,14 @@ var util = require('./util.js');
 var log = require('./log.js');
 var session = require('./session.js');
 var websocket = require('./websocket.js');
+var longpoll = require('./longpoll.js');
 var connection = require('./connection.js');
 var persona = require('./persona.js');
 
 
-exports.version = pjson.version;
 
+exports.version = pjson.version;
+exports.LongPoll = longpoll.LongPoll;
 exports.WebSocket = websocket.WebSocket;
 
 exports.Connection = connection.Connection;
@@ -47,6 +55,7 @@ exports.Error = session.Error;
 exports.Subscription = session.Subscription;
 exports.Registration = session.Registration;
 exports.Publication = session.Publication;
+
 
 exports.auth_persona = persona.auth;
 

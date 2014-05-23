@@ -68,7 +68,8 @@ var Connection = function (options) {
 
    // WAMP transport
    //
-   self._websocket_factory = new websocket.WebSocket(self._options.url, ['wamp.2.json']);
+   var protocols = [ 'wamp.2.json'];
+   self._websocket_factory = new websocket.WebSocket(self._options.url, protocols, self._options.long_poll_url, self._options.long_poll);
    self._websocket = null;
 
    // WAMP session

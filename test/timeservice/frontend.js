@@ -1,23 +1,22 @@
 try {
-   var autobahn = require('autobahn');
+   //console.log(window.autobahn);
+   var a = require('autobahn');
+   var autobahn = a;
 } catch (e) {
    // when running in browser, AutobahnJS will
    // be included without a module system
+    console.log(e);
 }
 
 var connection1 = new autobahn.Connection({
-   url: 'ws://127.0.0.1:8080/ws',
-   realm: 'realm1'}
+   url: 'ws://'+window.location.hostname+':8080/ws',
+   realm: 'realm1',
+   long_poll:false}
 );
 
 var session1 = null;
-
-connection1.onopen = function (new_session) {
-
-   session1 = new_session;
-   session1.log("Session open.");
-
-   session1.call('com.timeservice.now').then(
+get_time = function() {
+     session1.call('com.timeservice.now').then(
       function (now) {
          session1.log(now);
          //connection.close();
@@ -27,7 +26,18 @@ connection1.onopen = function (new_session) {
          //connection.close();
       }
    );
+    setTimeout(get_time,5000);
 };
+
+connection1.onopen = function (new_session) {
+
+   session1 = new_session;
+   session1.log("Session open.");
+   get_time();
+
+};
+
+
 
 connection1.onclose = function (reason, details) {
    console.log("connection 1", reason, details);

@@ -12,21 +12,21 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 
-var _create_websocket = function (url, protocols) {
+var _create_websocket = function (url, protocols, long_poll_url, long_poll) {
 
    if ('window' in global) {
-
+        long_poll = long_poll || false;
       //
       // running in browser
       //
-      if ("WebSocket" in window) {
+      if ("WebSocket" in window && !long_poll) {
          // Chrome, MSIE, newer Firefox
          if (protocols) {
             return new window.WebSocket(url, protocols);
          } else {
             return new window.WebSocket(url);
          }
-      } else if ("MozWebSocket" in window) {
+      } else if ("MozWebSocket" in window && !long_poll) {
          // older versions of Firefox prefix the WebSocket object
          if (protocols) {
             return new window.MozWebSocket(url, protocols);
@@ -34,7 +34,13 @@ var _create_websocket = function (url, protocols) {
             return new window.MozWebSocket(url);
          }
       } else {
-         return null;
+         // create Long Poll
+         if (protocols) {
+            return new autobahn.LongPoll(long_poll_url, protocols).create();
+         } else {
+            return new autobahn.LongPoll(long_poll_url).create();
+         }
+
       }
 
    } else {
@@ -167,16 +173,23 @@ var _create_websocket = function (url, protocols) {
 };
 
 
-var _WebSocket = function (url, protocols) {
+var _WebSocket = function (url, protocols, long_poll_url, long_poll) {
    var self = this;
    self._url = url;
    self._protocols = protocols;
+   self._long_poll = long_poll || false;
+   self._long_poll_url = long_poll_url || false;
+   if(!self._long_poll_url) {
+       var a = document.createElement("a");
+       a.href = self._url;
+       self._long_poll_url = "http://"+ a.host+"/longpoll";
+   }
 };
 
 
 _WebSocket.prototype.create = function () {
    var self = this;
-   return _create_websocket(self._url, self._protocols);
+   return _create_websocket(self._url, self._protocols,self._long_poll_url, self._long_poll);
 };
 
 exports.WebSocket = _WebSocket;
