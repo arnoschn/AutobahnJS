@@ -22,7 +22,7 @@ function auth(session, user, extra) {
    // Chrome: https://github.com/mozilla/persona/issues/4083
    // IE11: https://groups.google.com/forum/#!topic/mozilla.dev.identity/keEkVpvfLA8
 
-   var d = session.defer();
+   var d = session._defer();
 
    navigator.id.watch({
       loggedInUser: user,

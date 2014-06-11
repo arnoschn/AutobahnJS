@@ -12,29 +12,49 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 
-var _create_websocket = function (url, protocols) {
+function Factory(url, protocols, options) {
+    this.url = url;
+    this.options = options;
+    this.protocols = protocols;
 
-   if ('window' in global) {
+    if(this.options.longpoll && this.options.longpoll.klass) {
+        this._validate_lonpoll_transport(this.options.longpoll.klass);
+    }
+}
 
+Factory.prototype.create = function() {
+    if ('window' in global) {
       //
       // running in browser
       //
-      if ("WebSocket" in window) {
+      if ("WebSocket" in window && this.options.longpoll.options.use !== true) {
          // Chrome, MSIE, newer Firefox
-         if (protocols) {
-            return new window.WebSocket(url, protocols);
+         if (this.protocols) {
+            return new window.WebSocket(this.url, this.protocols);
          } else {
-            return new window.WebSocket(url);
+            return new window.WebSocket(this.url);
          }
-      } else if ("MozWebSocket" in window) {
+      } else if ("MozWebSocket" in window && this.options.longpoll.options.use !== true) {
          // older versions of Firefox prefix the WebSocket object
-         if (protocols) {
-            return new window.MozWebSocket(url, protocols);
+
+         if (this.protocols) {
+            return new window.MozWebSocket(this.url, this.protocols);
          } else {
-            return new window.MozWebSocket(url);
+            return new window.MozWebSocket(this.url);
          }
+      } else if(this.options.longpoll.klass && this.options.longpoll.options.use !== false) {
+
+         // create Long Poll
+        var tp=null;
+         if (this.protocols) {
+            tp = new this.options.longpoll.klass(this.options.longpoll.options, this.url, this.protocols);
+         } else {
+            tp = new this.options.longpoll.klass(this.options.longpoll.options, this.url);
+         }
+        console.assert(typeof tp.readyState !== "undefined", "transport must provide property 'readyState'");
+       return tp;
       } else {
-         return null;
+          console.assert(false,"Could not find a websocket implementation and longpoll option is disabled");
       }
 
    } else {
@@ -54,70 +74,11 @@ var _create_websocket = function (url, protocols) {
       // these will get called by the shim.
       // in case user code doesn't override these, provide these NOPs
       websocket.onmessage = function () {};
-      websocket.onopen = function () {};
+      websocket.onopen = onopen;
       websocket.onclose = function () {};
+      websocket.onerror = function () {};
 
-      // https://github.com/Worlize/WebSocket-Node
-      //
-/*      
-      (function() {
-
-         //var WebSocketClient = require('websocket').client;
-         var client = new WebSocketClient();
-
-         client.on('connectFailed', function (error) {
-            // https://developer.mozilla.org/en-US/docs/Web/API/CloseEvent
-            websocket.onclose({code: 1000, reason: error.toString(), wasClean: false});
-         });
-
-         client.on('connect', function (connection) {
-
-            websocket.protocol = connection.protocol;
-
-            websocket.send = function (msg) {
-               if (connection.connected) {
-                  // sending a string that gets encoded as UTF8
-                  // https://github.com/Worlize/WebSocket-Node/blob/master/lib/WebSocketConnection.js#L587
-                  connection.sendUTF(msg);
-
-                  // https://github.com/Worlize/WebSocket-Node/blob/master/lib/WebSocketConnection.js#L594
-                  // sending a Node Buffer
-                  //connection.sendBytes(msg);
-               }
-            };
-
-            websocket.close = function (code, reason) {
-               connection.close();
-            };
-
-            websocket.onopen();
-       
-            connection.on('error', function (error) {
-               // https://developer.mozilla.org/en-US/docs/Web/API/CloseEvent
-               websocket.onclose({code: 1000, reason: error.toString(), wasClean: true});
-            });
-
-            connection.on('close', function (code, reason) {
-               // https://developer.mozilla.org/en-US/docs/Web/API/CloseEvent
-               websocket.onclose({code: code, reason: reason, wasClean: true});
-            });
-
-            connection.on('message', function (message) {
-               // https://developer.mozilla.org/en-US/docs/Web/API/MessageEvent
-               if (message.type === 'utf8') {
-                  websocket.onmessage({data: message.utf8Data});
-               }
-            });
-
-         });
-
-         if (protocols) {
-            client.connect(url, protocols);
-         } else {
-            client.connect(url);
-         }
-      })();
-*/
+      var self = this;
 
       // https://github.com/einaros/ws
       //
@@ -125,13 +86,14 @@ var _create_websocket = function (url, protocols) {
 
          var WebSocket = require('ws');
          var client;
+          var protocols = self.protocols;
          if (protocols) {
             if (Array.isArray(protocols)) {
                protocols = protocols.join(',');
             }
-            client = new WebSocket(url, {protocol: protocols});
+            client = new WebSocket(self.url, {protocol: protocols});
          } else {
-            client = new WebSocket(url);
+            client = new WebSocket(self.url);
          }
 
          websocket.send = function (msg) {
@@ -165,18 +127,14 @@ var _create_websocket = function (url, protocols) {
       return websocket;
    }
 };
+Factory.prototype._validate_lonpoll_transport = function(klass) {
+    console.assert(typeof klass.prototype === "object", "options.transport must be a class");
+    console.assert(typeof klass.prototype.send === "function", "transport must provide method 'send'");
+    console.assert(typeof klass.prototype.onmessage === "function", "transport must provide method 'onmessage'");
+    console.assert(typeof klass.prototype.onclose === "function", "transport must provide method 'onclose'");
+    console.assert(typeof klass.prototype.onerror === "function", "transport must provide method 'onclose'");
 
-
-var _WebSocket = function (url, protocols) {
-   var self = this;
-   self._url = url;
-   self._protocols = protocols;
 };
 
 
-_WebSocket.prototype.create = function () {
-   var self = this;
-   return _create_websocket(self._url, self._protocols);
-};
-
-exports.WebSocket = _WebSocket;
+exports.Factory = Factory;
