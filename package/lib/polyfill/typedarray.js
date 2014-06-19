@@ -34,6 +34,8 @@
 // Variations:
 //  * Allows typed_array.get/set() as alias for subscripts (typed_array[])
 //  * Gradually migrating structure from Khronos spec to ES6 spec
+
+
 if (typeof global["Uint8Array"] === "undefined") {
     (function (global, win) {
         'use strict';
@@ -162,12 +164,18 @@ if (typeof global["Uint8Array"] === "undefined") {
             var s = 32 - bits;
             return (value << s) >> s;
         }
-
+        function as_signed64(value, bits) {
+            var s = 64 - bits;
+            return (value << s) >> s;
+        }
         function as_unsigned(value, bits) {
             var s = 32 - bits;
             return (value << s) >>> s;
         }
-
+        function as_unsigned64(value, bits) {
+            var s = 64 - bits;
+            return (value << s) >>> s;
+        }
         function packI8(n) {
             return [n & 0xff];
         }
@@ -208,11 +216,15 @@ if (typeof global["Uint8Array"] === "undefined") {
         function packI32(n) {
             return [(n >> 24) & 0xff, (n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
         }
-
+        function packI64(n) {
+            return [(n >> 56) & 0xff,(n >> 48) & 0xff,(n >> 40) & 0xff,(n >> 32) & 0xff,(n >> 24) & 0xff, (n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+        }
         function unpackI32(bytes) {
             return as_signed(bytes[0] << 24 | bytes[1] << 16 | bytes[2] << 8 | bytes[3], 32);
         }
-
+        function unpackI64(bytes) {
+            return as_signed64(bytes[0] << 56 |bytes[1] << 48 |bytes[2] << 40 |bytes[3] << 32 |bytes[4] << 24 | bytes[5] << 16 | bytes[6] << 8 | bytes[7], 64);
+        }
         function packU32(n) {
             return [(n >> 24) & 0xff, (n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
         }
@@ -220,7 +232,13 @@ if (typeof global["Uint8Array"] === "undefined") {
         function unpackU32(bytes) {
             return as_unsigned(bytes[0] << 24 | bytes[1] << 16 | bytes[2] << 8 | bytes[3], 32);
         }
+        function packU64(n) {
+            return [(n >> 56) & 0xff, (n >> 48) & 0xff, (n >> 40) & 0xff, (n >> 32) & 0xff, (n >> 24) & 0xff, (n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+        }
 
+        function unpackU64(bytes) {
+            return as_unsigned64(bytes[0] << 56 |bytes[1] << 48 |bytes[2] << 40 |bytes[3] << 32 |bytes[4] << 24 | bytes[5] << 16 | bytes[6] << 8 | bytes[7], 64);
+        }
         function packIEEE754(v, ebits, fbits) {
 
             var bias = (1 << (ebits - 1)) - 1,
@@ -403,7 +421,7 @@ if (typeof global["Uint8Array"] === "undefined") {
                         Object.defineProperty(this, 'length', {value: typedArray.length});
 
                         for (var i = 0; i < this.length; i += 1)
-                            this._setter(i, typedArray._getter(i));
+                            this._setter(i, typedArray[i]);
 
                     }).apply(this, arguments);
                 }
@@ -1036,19 +1054,27 @@ if (typeof global["Uint8Array"] === "undefined") {
             var Int16Array = makeTypedArray(2, packI16, unpackI16);
             var Uint16Array = makeTypedArray(2, packU16, unpackU16);
             var Int32Array = makeTypedArray(4, packI32, unpackI32);
+            var Int64Array = makeTypedArray(8, packI64, unpackI64);
             var Uint32Array = makeTypedArray(4, packU32, unpackU32);
+            var Uint64Array = makeTypedArray(8, packU64, unpackU64);
             var Float32Array = makeTypedArray(4, packF32, unpackF32);
             var Float64Array = makeTypedArray(8, packF64, unpackF64);
 
+            global.TypedArrayPolyfill = win.TypedArrayPolyfill = win.Uint8Array ? false: true;
             global.Int8Array = win.Int8Array = global.Int8Array || Int8Array;
             global.Uint8Array = win.Uint8Array = global.Uint8Array || Uint8Array;
             global.Uint8ClampedArray = win.Uint8ClampedArray = global.Uint8ClampedArray || Uint8ClampedArray;
             global.Int16Array = win.Int16Array = global.Int16Array || Int16Array;
             global.Uint16Array = win.Uint16Array = global.Uint16Array || Uint16Array;
             global.Int32Array = win.Int32Array = global.Int32Array || Int32Array;
+            global.Int64Array = win.Int64Array = global.Int64Array || Int64Array;
             global.Uint32Array = win.Uint32Array = global.Uint32Array || Uint32Array;
+            global.Uint64Array = win.Uint64Array = global.Uint64Array || Uint64Array;
             global.Float32Array = win.Float32Array = global.Float32Array || Float32Array;
             global.Float64Array = win.Float64Array = global.Float64Array || Float64Array;
+            global.ArrayBuffer = win.ArrayBuffer = global.ArrayBuffer || ArrayBuffer;
+
+
         }());
 
         //
@@ -1121,7 +1147,9 @@ if (typeof global["Uint8Array"] === "undefined") {
             Object.defineProperty(DataView.prototype, 'getUint16', {value: makeGetter(global.Uint16Array)});
             Object.defineProperty(DataView.prototype, 'getInt16', {value: makeGetter(global.Int16Array)});
             Object.defineProperty(DataView.prototype, 'getUint32', {value: makeGetter(global.Uint32Array)});
+            Object.defineProperty(DataView.prototype, 'getUint64', {value: makeGetter(global.Uint64Array)});
             Object.defineProperty(DataView.prototype, 'getInt32', {value: makeGetter(global.Int32Array)});
+            Object.defineProperty(DataView.prototype, 'getInt64', {value: makeGetter(global.Int64Array)});
             Object.defineProperty(DataView.prototype, 'getFloat32', {value: makeGetter(global.Float32Array)});
             Object.defineProperty(DataView.prototype, 'getFloat64', {value: makeGetter(global.Float64Array)});
 
@@ -1155,10 +1183,12 @@ if (typeof global["Uint8Array"] === "undefined") {
             Object.defineProperty(DataView.prototype, 'setInt16', {value: makeSetter(global.Int16Array)});
             Object.defineProperty(DataView.prototype, 'setUint32', {value: makeSetter(global.Uint32Array)});
             Object.defineProperty(DataView.prototype, 'setInt32', {value: makeSetter(global.Int32Array)});
+            Object.defineProperty(DataView.prototype, 'setUint64', {value: makeSetter(global.Uint64Array)});
+            Object.defineProperty(DataView.prototype, 'setInt64', {value: makeSetter(global.Int64Array)});
             Object.defineProperty(DataView.prototype, 'setFloat32', {value: makeSetter(global.Float32Array)});
             Object.defineProperty(DataView.prototype, 'setFloat64', {value: makeSetter(global.Float64Array)});
 
-            global.DataView = global.DataView || DataView;
+            global.DataView =  win.DataView = global.DataView || DataView;
 
         }());
 

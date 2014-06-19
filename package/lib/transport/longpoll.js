@@ -11,22 +11,41 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-var when = require('when');
-var util = require('../util.js');
 
+var util = require('../util.js');
 
 
 function Factory(options) {
     this.options = options;
-    util.assert(this.options.url!==undefined, "options.url missing");
+    util.assert(this.options.url !== undefined, "options.url missing");
     util.assert(typeof this.options.url === "string" || (typeof this.options.url === "object" && typeof this.options.url.base === "string"), "options.url must be a string or an object with options.url.base");
 }
 
 Factory.type = "longpoll";
 
-Factory.prototype.create = function() {
+Factory.isSupported = function () {
+    var xhr;
+    if (typeof window === "undefined") {
+        return false;
+    } else {
+        if(window.location.protocol === "file:") {
+            return false;
+        }
+    }
+
+    if (typeof XMLHttpRequest !== "undefined") {
+        xhr = new XMLHttpRequest();
+    } else if (ActiveXObject) {
+        xhr = LongPollSocket._iexhr();
+    }
+    if (!xhr) {
+        return false;
+    }
+    xhr = null;
+    return true;
+}
+Factory.prototype.create = function () {
     var longpoll = new LongPollSocket(this.options);
-    longpoll._connect();
     return longpoll;
 
 };
@@ -39,8 +58,9 @@ function LongPollSocket(longpoll_options) {
     this._cors_resources = {};
     this._receive_timeout = false;
     this._init_transaction_ids();
-
-
+    this._is_receiving = false;
+    this._is_sending = false;
+    this._defer = longpoll_options.defer;
     this._options = util.merge_options(LongPollSocket.default_options, longpoll_options);
     this._options.url = this._get_url_options(this._options.url);
 
@@ -50,7 +70,8 @@ function LongPollSocket(longpoll_options) {
     util.assert(this._options.url.open, "No open url provided");
     util.assert(this._options.url.close, "No close url provided");
 
-    this._cors_needed  = this._determine_if_cors_is_needed();
+    this._cors_needed = this._determine_if_cors_is_needed();
+
     this._options.protocols = this._options.protocols || ["wamp.2.json"];
     this.protocol = undefined;
     this._send_buffer = [];
@@ -61,48 +82,51 @@ function LongPollSocket(longpoll_options) {
     this._connecting = false;
     this.readyState = LongPollSocket.CLOSED;
 
+
 }
-LongPollSocket.prototype._init_transaction_ids = function() {
-    this._transaction_ids  = {"receive":0, "send":0};
+LongPollSocket.prototype._init_transaction_ids = function () {
+    this._transaction_ids = {"receive": 0, "send": 0};
 };
-LongPollSocket.prototype._create_transaction_url = function(type, url, additional_params) {
-    if(this._cors_needed) {
-        if(additional_params) {
-            return url+"?"+additional_params;
+LongPollSocket.prototype._create_transaction_url = function (type, url, additional_params) {
+    if (this._cors_needed) {
+        if (additional_params) {
+            return url + "?" + additional_params;
         } else {
             return url;
         }
 
     } else {
         this._transaction_ids[type]++;
-        if(additional_params) {
-            return url+'?x=' + this._transaction_ids[type]+'&'+additional_params;
+        if (additional_params) {
+            return url + '?x=' + this._transaction_ids[type] + '&' + additional_params;
         } else {
-            return url+'?x=' + this._transaction_ids[type];
+            return url + '?x=' + this._transaction_ids[type];
         }
 
     }
 };
 
-LongPollSocket.prototype._determine_if_cors_is_needed = function() {
+LongPollSocket.prototype._determine_if_cors_is_needed = function () {
+    var host = window.location.host;
+    this.host = host;
     var longpoll_uri = util.parseUri(this._options.url.base);
-    return longpoll_uri.authority!=window.location.host;
+    return longpoll_uri.authority != host;
 
 };
-LongPollSocket.prototype._get_url_options = function(url) {
+LongPollSocket.prototype._get_url_options = function (url) {
     var uri;
     var url_object = {};
-    if(typeof url === "object") {
+    if (typeof url === "object") {
         url_object = url;
 
     } else if (typeof url === "string") {
         uri = util.parseUri(url);
-        if(uri.protocol == "ws") {
+        if (uri.protocol == "ws") {
             // we got the default url from the connection config
-            url = "http://"+uri.authority+"/longpoll";
-        } else if(uri.protocol == "wss") {
+            url = "http://" + uri.authority + "/longpoll";
+        } else if (uri.protocol == "wss") {
             // we got the default url from the connection config
-            url = "https://"+uri.authority+"/longpoll";
+            url = "https://" + uri.authority + "/longpoll";
         }
         url_object.base = url;
         url_object = util.merge_options(LongPollSocket.default_options.url, url_object);
@@ -112,7 +136,7 @@ LongPollSocket.prototype._get_url_options = function(url) {
     return url_object;
 
 };
-LongPollSocket.default_options={
+LongPollSocket.default_options = {
     transport: LongPollSocket,
     send_interval: 500,
     open_timeout: 30,
@@ -137,94 +161,102 @@ LongPollSocket.prototype.send = function (payload) {
 
 
 };
-LongPollSocket.prototype._destruct = function() {
+LongPollSocket.prototype._destruct = function () {
     this._terminate_sockets();
 
 };
 
 LongPollSocket.prototype._on_receive_success = function (req, res) {
-    console.debug("receive ok", res);
-    if(typeof res[0] === "number") {
-        res=[res];
-    }
-    for (var i = 0; i < res.length; i++) {
-        this.onmessage(res[i], true);
-    }
+    this.logger.debug("receive ok", res);
+    this.onmessage({data: res});
+    this._is_receiving = false;
 
-    if (!self._is_closing) {
-        this.receive();
+
+    if (!this._is_closing) {
+        this._init_receiver();
     }
 };
 LongPollSocket.prototype._on_receive_failure = function (req, code) {
-    if(this._receive_timeout) {
-        this._receive_timeout = false;
-        return;
-    }
-    console.error("receive failed", code, req.responseText);
 
 
-    if (code === 0 || (code >= 400 && code<=999)) {
+    this._is_receiving = false;
+    if (code === 0 || (code >= 400 && code <= 999)) {
         // We lost our session??
-        this._connected && this.onclose({"code":code,"reason":req.responseText,"wasClean": false});
-    } else if(code>=1000) {
-        this._connected && this.onclose({"code":code,"reason":req.responseText,"wasClean": false});
+        var was_connected = this._connected;
+        this._close();
+        was_connected && this.onclose({"code": code, "msg": req.response, "wasClean": false});
+    } else if (code >= 1000) {
+        var was_connected = this._connected;
+        this._close();
+        was_connected && this.onclose({"code": code, "msg": req.response, "wasClean": false});
     } else if (!this._is_closing) {
-        this.receive();
+        this.onerror({"code": code, "msg": req.response, "wasClean": false});
+        this._init_receiver();
     }
 };
 LongPollSocket.prototype.receive = function () {
-    if (this._is_closing) return;
-
+    if (this._is_closing || this._is_receiving) return;
+    this._is_receiving = true;
     this._request("receive", this._create_transaction_url("receive", this._options.url.base + '/' + this._transport + this._options.url.receive),
-        undefined, {timeout:this._options.receive_timeout, ontimeout: this._init_receiver.bind(this)}).then(
-        this._on_receive_success.bind(this, this._requests["receive"]),
-        this._on_receive_failure.bind(this, this._requests["receive"])
-    );
+        undefined, {timeout: this._options.receive_timeout, ontimeout: this._init_receiver.bind(this)}).then(
+            this._on_receive_success.bind(this, this._requests["receive"]),
+            this._on_receive_failure.bind(this, this._requests["receive"])
+        );
 };
 LongPollSocket.prototype._on_close_success = function (req, code, reason, res) {
 
     this.readyState = LongPollSocket.CLOSED;
-    console.debug("closed successfully");
-    if(this.onclose) {
-        this.onclose({wasClean:true, code:code, msg:reason});
+    this.logger.debug("closed successfully");
+
+    if (this.onclose) {
+        this.onclose({wasClean: true, code: code, msg: reason});
     }
-    return this._close(code, reason);
+    return this._closed();
 };
 LongPollSocket.prototype._on_close_failure = function (req, code, reason) {
 
     this.readyState = LongPollSocket.CLOSED;
     console.error("closed with error", req);
 
-    if(this.onclose) {
-        this.onclose({wasClean:false, code:code, msg:reason});
+    if (this.onclose) {
+        this.onclose({wasClean: false, code: code, msg: reason});
     }
 
 };
 LongPollSocket.prototype._on_open_success = function (req, res) {
 
     this.readyState = LongPollSocket.OPEN;
-    console.debug("ok", res);
-    console.debug(res.transport);
+
+    this.logger.debug("ok", res);
+    var res = typeof res === "object" ? res : JSON.parse(res);
+
+    this.logger.debug(res.transport);
     this._transport = res.transport;
-    this.name = "longpoll(#"+this._transport+')'
+    this.name = "longpoll(#" + this._transport + ')'
     this.protocol = res.protocol;
     this._send_buffer = [];
-    this._transaction_ids  = {"receive":0, "send":0};
+    this._transaction_ids = {"receive": 0, "send": 0};
+
     this._init_sender();
     this._init_receiver();
-    this.onopen(self);
+    this.onopen(this.protocol);
     this._connected = true;
 
 };
 LongPollSocket.prototype._on_open_failure = function (req, code) {
-    console.error("failed", code, req.responseText);
-    this.readyState = LongPollSocket.CLOSED;
 
-    this.onerror(code, "open call failed", req);
-    this.onclose({wasClean:false,code:code,msg:req.responseText});
+    this.readyState = LongPollSocket.CLOSED;
+    var msg;
+    try {
+        msg = req.responseText;
+    } catch (e) {
+        msg = "";
+    }
+    this.onerror({wasClean: false, code: code, msg: msg});
+    this.onclose({wasClean: false, code: code, msg: msg});
 
 };
-LongPollSocket.prototype._connect = function () {
+LongPollSocket.prototype.connect = function () {
     if (this._connecting) {
         console.warn("Already connecting");
         return;
@@ -234,50 +266,57 @@ LongPollSocket.prototype._connect = function () {
     }
     this.readyState = LongPollSocket.CONNECTING;
     this._connecting = true;
-    this._request("open", this._create_transaction_url("send", this._options.url.base + this._options.url.open), JSON.stringify(this._options),
-        {"timeout":this._options.open_timeout, ontimeout:this._close_timeout.bind(this, false)}).then(
-        this._on_open_success.bind(this, this._requests["open"]), this._on_open_failure.bind(this, this._requests["open"]));
+    this._request("open", this._create_transaction_url("send", this._options.url.base + this._options.url.open), JSON.stringify({"protocols": this._options.protocols}),
+        {"mime_type": "application/json", "timeout": this.timeout || this._options.open_timeout, ontimeout: this._close_timeout.bind(this, false)}).then(
+            this._on_open_success.bind(this, this._requests["open"]), this._on_open_failure.bind(this, this._requests["open"]));
 };
 LongPollSocket.prototype.close = function (code, reason) {
-    if(this._connected) {
+    if (this._connected && !this._is_closing) {
         this._is_closing = true;
         try {
-           this._request("close", this._create_transaction_url("send", this._options.url.base + this._options.url.close, 'session='+this._transport), undefined,
-            {timeout:this._options.close_timeout, ontimeout:this._close_timeout.bind(this, false)}, false);
-            return this._on_close_success(this._requests["close"],code,reason);
-        }  catch (exc) {
-            return this._on_close_failure(this._requests["close"],code,reason);
+            this._request("close", this._create_transaction_url("send", this._options.url.base + "/" + this._transport + this._options.url.close), {reason: reason },
+                {timeout: this._options.close_timeout, ontimeout: this._close_timeout.bind(this, false)}, false);
+            return this._on_close_success(this._requests["close"], code, reason);
+        } catch (exc) {
+            return this._on_close_failure(this._requests["close"], code, reason);
         }
 
 
-
     }
 
 };
-LongPollSocket.prototype._close_timeout = function(trigger_error) {
+LongPollSocket.prototype._close_timeout = function (trigger_error) {
     this._terminate_sockets();
     this._connected = false;
     this._connecting = false;
     this.readyState = LongPollSocket.CLOSED;
-    trigger_error = trigger_error===undefined?true: trigger_error;
-    if(trigger_error) {
-        this.onerror(-1, "Timeout", {});
+    trigger_error = trigger_error === undefined ? true : trigger_error;
+    if (trigger_error) {
+        this.onerror({code: -1, msg: "Timeout"});
     }
 
 };
-LongPollSocket.prototype._close = function(code, reason) {
+LongPollSocket.prototype._closed = function () {
     this._terminate_sockets();
     this._connected = false;
     this._connecting = false;
     this.readyState = LongPollSocket.CLOSED;
-     if(this.onerror) {
-        var msg="Socket was closed";
-        if(code===1000) {
-            msg+=" cleanly";
+    return this._send_buffer;
+
+};
+LongPollSocket.prototype._close = function (code, reason) {
+    this._terminate_sockets();
+    this._connected = false;
+    this._connecting = false;
+    this.readyState = LongPollSocket.CLOSED;
+    if (this.onerror) {
+        var msg = "Socket was closed";
+        if (code === 1000) {
+            msg += " cleanly";
         } else {
-            msg+=" uncleanly";
+            msg += " uncleanly";
         }
-        this.onerror(code, reason,msg);
+        this.onerror({code: code, msg: msg});
     }
 
     return this._send_buffer;
@@ -300,8 +339,19 @@ LongPollSocket.prototype.onerror = function () {
 LongPollSocket.prototype._terminate_sockets = function () {
 
     for (var k in this._requests) {
-        this._requests[k].onreadystatechange = null;
-        this._requests[k].abort();
+        try {
+            this._requests[k].onreadystatechange = function () {
+            };
+        } catch (e) {
+
+        }
+
+        try {
+            this._requests[k].abort();
+        } catch (e) {
+
+        }
+
         this._requests[k] = null;
         delete this._requests[k];
 
@@ -309,68 +359,106 @@ LongPollSocket.prototype._terminate_sockets = function () {
 };
 
 LongPollSocket.prototype._on_send_success = function (req, res) {
-    console.debug("send result:", res, req);
+    this.logger.debug("send result:", res, req);
 
     clearTimeout(this._sender);
     this._sender = null;
     this._init_sender();
 };
+
 LongPollSocket.prototype._on_send_failure = function (req, code) {
-    console.error("failed", code, req.responseText, req);
+    var msg;
+    try {
+        msg = req.responseText;
+    } catch (e) {
+        msg = "";
+    }
+    this.onerror({code: code, msg: msg});
     if (code === 0 || code >= 400) {
         // We lost our session??
         this._sender = null;
-        this._connected && this.onclose({"code":code,"reason":req.responseText,"wasClean": false});
+        var was_connected = this._connected;
+        this._close();
+        was_connected && this.onclose({"code": code, "msg": msg, "wasClean": false});
     } else {
         clearTimeout(this._sender);
         this._sender = null;
         this._init_sender();
-        this.onerror(code, msg, resp);
+
     }
 
 };
+function appendBuffer(buffer1, buffer2) {
+    var tmp = new Uint8Array(buffer1.byteLength + buffer2.byteLength);
+    tmp.set(new Uint8Array(buffer1), 0);
+    tmp.set(new Uint8Array(buffer2), buffer1.byteLength);
+    return tmp;
+};
 LongPollSocket.prototype._send_data = function () {
 
-            if (this._send_buffer.length) {
-
-                var send_buffer = this._send_buffer.join('\x00');
-                this._send_buffer = [];
-                // send send_buffer ..
-
-                this._request("send", this._create_transaction_url("send", this._options.url.base + '/' + this._transport + this._options.url.send) , send_buffer,
-                    {timeout:this._options.send_timeout, ontimeout:this._close_timeout.bind(this)}).then(
-                    this._on_send_success.bind(this, this._requests["send"]),
-                    this._on_send_failure.bind(this, this._requests["send"])
-                );
-
+    if (this._send_buffer.length && (!this._requests["send"] || this._requests["send"].readyState == 4)) {
+        var send_buffer;
+        if (this.batched) {
+            if (this.BINARY) {
+                send_buffer = new Uint8Array(0);
+                while (this._send_buffer.length > 0) {
+                    send_buffer = appendBuffer(send_buffer, this._send_buffer.shift());
+                }
             } else {
-                this._sender = null;
-                this._init_sender();
+                send_buffer = this._send_buffer.join("");
+                this._send_buffer = [];
             }
-        };
+
+
+        } else {
+            send_buffer = this._send_buffer.shift();
+
+        }
+
+
+        // send send_buffer ..
+
+        this._request("send", this._create_transaction_url("send", this._options.url.base + '/' + this._transport + this._options.url.send), send_buffer,
+            {timeout: this._options.send_timeout, ontimeout: this._close_timeout.bind(this)}).then(
+                this._on_send_success.bind(this, this._requests["send"]),
+                this._on_send_failure.bind(this, this._requests["send"])
+            );
+
+    } else {
+        this._sender = null;
+        this._init_sender();
+    }
+};
 LongPollSocket.prototype._init_sender = function () {
     if (this._sender === null) {
         this._sender = setTimeout(this._send_data.bind(this), this._options.send_interval);
     }
 };
 LongPollSocket.prototype._init_receiver = function () {
-    this._receive_timeout = true;
-    setTimeout(this.receive.bind(this), 100);
+    if (this._receive_timeout) {
+        clearTimeout(this._receive_timeout);
+    }
+    this._receive_timeout = setTimeout(this.receive.bind(this), 100);
 };
 
 LongPollSocket.prototype._onreadystatechange = function (id, d, evt) {
-
+    var response;
     if (this._requests[id].readyState === 4) {
 
 
         if (this._requests[id].status === 200) {
-            var txt=this._requests[id].responseText;
+            if (this._requests[id].response && typeof this._requests[id].response === "object") {
+                response = new Uint8Array(this._requests[id].response);
+            } else {
+                response = this._requests[id].responseText;
+            }
+
             try {
-               var msg = JSON.parse(txt);
-                d.resolve(msg);
-            } catch(Exc) {
+                // var msg = JSON.parse(txt);
+                d.resolve(response);
+            } catch (Exc) {
                 // empty receive with status 200 => timeout of session, failing,
-                d.reject(this._requests[id].status, this._requests[id].responseText, this._requests[id]);
+                d.reject(this._requests[id].status, response, this._requests[id]);
             }
 
 
@@ -378,50 +466,97 @@ LongPollSocket.prototype._onreadystatechange = function (id, d, evt) {
             d.resolve();
 
         } else {
-            d.reject(this._requests[id].status, this._requests[id].responseText, this._requests[id]);
-            //cors_preflight(url,d, data);
+            if (this._requests[id].response && typeof this._requests[id].response === "object") {
+                response = new Uint8Array(this._requests[id].response);
+            } else {
+                response = this._requests[id].responseText;
+            }
+            d.reject(this._requests[id].status, response, this._requests[id]);
         }
 
-    }
-};
-LongPollSocket.prototype._close_socket_if_still_not_connected = function(req) {
-    if(req.readyState===1 || (req.readyState === 4 && req.status === 0)) {
-        this._close_timeout();
-    }
-};
-LongPollSocket.prototype._cors_preflight = function(url) {
-    if (!this._requests["_preflight"]) {
-
-        this._requests["_preflight"] = new XMLHttpRequest();
-
-
-    }
-    this._requests["_preflight"].open("OPTIONS", url, false);
-    this._requests["_preflight"].setRequestHeader("Access-Control-Request-Method", "POST");
-    this._requests["_preflight"].setRequestHeader("Access-Control-Request-Headers", "content-type");
-    this._requests["_preflight"].setRequestHeader("Origin", window.location.host);
-    this._requests["_preflight"].send();
-    if (this._requests["_preflight"].status === 200) {
-
-            this._cors_resources[url]=true;
-            return true;
-
     } else {
-        return false;
+        //
+
+    }
+};
+
+LongPollSocket._iexhr = function () {
+    try {
+        return new ActiveXObject("Msxml2.XMLHTTP.6.0");
+    }
+    catch (e) {
+    }
+    try {
+        return new ActiveXObject("Msxml2.XMLHTTP.3.0");
+    }
+    catch (e) {
+    }
+    try {
+        return new ActiveXObject("Msxml2.XMLHTTP");
+    }
+    catch (e) {
+    }
+    //Microsoft.XMLHTTP points to Msxml2.XMLHTTP.3.0 and is redundant
+    throw new Error("This browser does not support XMLHttpRequest.");
+};
+
+LongPollSocket.prototype._create_xhr = function () {
+
+    if (typeof XMLHttpRequest !== "undefined") {
+        xhr = new XMLHttpRequest();
+    } else if (ActiveXObject) {
+        xhr = LongPollSocket._iexhr();
+    }
+    if (!xhr) {
+        throw new Error("Could not find a XMLHttpRequest implementation (node.js requires xmlhttprequest)");
+    }
+
+    return xhr;
+};
+
+LongPollSocket.prototype._cors_preflight = function (id, url) {
+    if (!this._requests["_preflight:" + id]) {
+
+        this._requests["_preflight:" + id] = this._create_xhr();
+
+
+    }
+    var d = this._defer();
+    this._requests["_preflight:" + id].onreadystatechange = this._onreadystatechange.bind(this, "_preflight:" + id, d);
+    this._requests["_preflight:" + id].open("OPTIONS", url);
+    this._requests["_preflight:" + id].setRequestHeader("Access-Control-Request-Method", "POST");
+    this._requests["_preflight:" + id].setRequestHeader("Access-Control-Request-Headers", "content-type");
+    this._requests["_preflight:" + id].setRequestHeader("Origin", this.host);
+
+    this._requests["_preflight:" + id].send();
+    if (d.promise.then) {
+        // whenjs has the actual user promise in an attribute
+        return d.promise;
+    } else {
+        return d;
     }
 
 };
-LongPollSocket.prototype._request = function (id, url, data, options, async) {
-    options = options || {};
-    async = async === undefined? true:async;
+LongPollSocket.prototype._failed_cors_preflight = function (d, id, url) {
 
-    var d = when.defer();
+    d.reject("Could not complete cors preflight");
+    if (d.promise.then) {
+        // whenjs has the actual user promise in an attribute
+        return d.promise;
+    } else {
+        return d;
+    }
+};
+LongPollSocket.prototype._request = function (id, url, data, options) {
+    options = options || {};
+
+    var d = this._defer();
     if (!this._requests[id]) {
 
-        this._requests[id] = new XMLHttpRequest();
+        this._requests[id] = this._create_xhr()
 
 
-    } else if(this._requests[id].readyState === 1 && async) {
+    } else if (this._requests[id].readyState === 1 && async) {
         d.reject("Could not load resource");
         if (d.promise.then) {
             // whenjs has the actual user promise in an attribute
@@ -430,61 +565,83 @@ LongPollSocket.prototype._request = function (id, url, data, options, async) {
             return d;
         }
     }
-    if(async) {
-       this._requests[id].onreadystatechange = this._onreadystatechange.bind(this, id, d);
+
+
+    if (this._cors_needed && !this._cors_resources[url]) {
+        this._cors_preflight(id, url).then(this._do_request.bind(this, d, options, id, url, data), this._failed_cors_preflight.bind(this, d, id, url));
+        if (d.promise.then) {
+            // whenjs has the actual user promise in an attribute
+            return d.promise;
+        } else {
+            return d;
+        }
     } else {
-        this._requests[id].onreadystatechange = null;
+        return this._do_request(d, options, id, url, data);
     }
 
+
+};
+
+LongPollSocket.prototype._do_request = function (d, options, id, url, data) {
     try {
-        if(this._cors_needed && !this._cors_resources[url]) {
-            if(!this._cors_preflight(url)) {
-                console.error("Could not complete cors preflight");
-                d.reject("Could not complete cors preflight");
-                if (d.promise.then) {
-                    // whenjs has the actual user promise in an attribute
-                    return d.promise;
+        this._cors_resources[url] = true;
+        this._requests[id].onreadystatechange = this._onreadystatechange.bind(this, id, d);
+        var content_type = this.mime_type || options.mime_type;
+        content_type = content_type + "; charset=x-user-defined";
+
+
+        this._requests[id].open("POST", url);
+        if (this.BINARY && typeof this._requests[id].responseType !== "undefined" && this._requests[id].responseType != this.binaryType) {
+
+            this._requests[id].responseType = this.binaryType;
+        } else {
+            content_type = this.mime_type + "; charset=UTF-8";
+        }
+        if (this._requests[id].overrideMimeType) {
+            this._requests[id].overrideMimeType(content_type);
+        }
+        if (this._requests[id].ontimeout !== undefined) {
+
+
+            if (options.timeout > 0 && options.timeout != this._requests[id].timeout) {
+
+                this._requests[id].timeout = options.timeout * 1000;
+
+
+                if (options.ontimeout) {
+                    this._requests[id].ontimeout = options.ontimeout;
                 } else {
-                    return d;
+                    this._requests[id].ontimeout = null;
+                }
+
+            } else if (options.timeout < 1) {
+                this._requests[id].ontimeout = null;
+                if (this._requests[id].timeout !== undefined) {
+                    this._requests[id].timeout = null;
                 }
             }
         }
-        this._requests[id].open("POST", url, async);
 
-        if(async && options.timeout>0 && options.timeout!=this._requests[id].timeout) {
-           this._requests[id].timeout = options.timeout*1000;
-             if(options.ontimeout) {
-                this._requests[id].ontimeout=options.ontimeout;
-             } else {
-                 this._requests[id].ontimeout = null;
-             }
-
-        } else if(options.timeout<1) {
-            this._requests[id].ontimeout = null;
-            this._requests[id].timeout = null;
-        }
-        this._requests[id].setRequestHeader("Content-type", "application/json; charset=utf-8");
+        this._requests[id].setRequestHeader("Content-Type", content_type);
 
 
     } catch (exc) {
-        console.error(exc);
-            if(async) {
-            d.reject(exc);
-            if (d.promise.then) {
-                // whenjs has the actual user promise in an attribute
-                return d.promise;
-            } else {
-                return d;
-            }
-        //cors_preflight(url,d, data);
+        console.error("Error in request", exc);
+
+        d.reject(exc);
+        if (d.promise.then) {
+            // whenjs has the actual user promise in an attribute
+            return d.promise;
         } else {
-            throw exc;
+            return d;
         }
+
 
     }
 
     try {
-         if (data !== undefined) {
+        if (data !== undefined) {
+
 
             this._requests[id].send(data);
 
@@ -492,31 +649,13 @@ LongPollSocket.prototype._request = function (id, url, data, options, async) {
         } else {
             this._requests[id].send();
         }
-    } catch(exc2) {
-        if(async) {
-           d.reject(exc2);
-        } else {
-            throw exc2;
-        }
+    } catch (exc2) {
+
+        d.reject(exc2);
+
 
     }
 
-    if(!async) {
-        if (this._requests[id].status === 200) {
-
-
-            return JSON.parse(this._requests[id].responseText);
-
-        } else if (this._requests[id].status === 204 || this._requests[id].status === 1223) {
-            d.resolve();
-            return;
-
-        } else {
-
-            //cors_preflight(url,d, data);
-            throw {"status":this._requests[id].status, "responseText": this._requests[id].responseText, "request": this._requests[id]};
-        }
-    }
 
     if (d.promise.then) {
         // whenjs has the actual user promise in an attribute
@@ -526,6 +665,7 @@ LongPollSocket.prototype._request = function (id, url, data, options, async) {
     }
 
 };
+
 
 exports.Factory = Factory;
 

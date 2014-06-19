@@ -94,7 +94,11 @@ if (!('some' in Array.prototype)) {
         return false;
     };
 }
-
+if(!Array.isArray) {
+  Array.isArray = function(arg) {
+    return Object.prototype.toString.call(arg) === '[object Array]';
+  };
+}
 if ( 'function' !== typeof Array.prototype.reduceRight ) {
   Array.prototype.reduceRight = function( callback /*, initialValue*/ ) {
     'use strict';

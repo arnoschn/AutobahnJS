@@ -56,6 +56,10 @@
    /**
     * Support group and groupEnd functions
     */
+   ('clear' in console) ||
+   (console.clear = function() {
+
+   });
    ('group' in console) ||
    (console.group = function(msg) {
       console.info("\n--- "+msg+" ---\n");

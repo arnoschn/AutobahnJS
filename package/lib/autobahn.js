@@ -37,6 +37,8 @@ var configure = require('./configure.js');
 exports.version = pjson.version;
 
 exports.transports = configure.transports;
+exports.serializers = configure.serializers;
+
 
 exports.Connection = connection.Connection;
 
